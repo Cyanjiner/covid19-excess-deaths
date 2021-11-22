@@ -1,7 +1,7 @@
 ---
-title: "Project Proposal"
+title: "Estimating COVID-19 Excess Deaths"
 author: "Jiner Zheng"
-date: "10/8/2021"
+date: "11/11/2021"
 output: html_document
 ---
 
