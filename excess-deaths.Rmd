@@ -1,0 +1,486 @@
+---
+title: "Project Proposal"
+author: "Jiner Zheng"
+date: "10/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+## prep
+```{r load in dataset}
+library(dplyr)
+library(readr)
+library(fpp2)
+library(forecast)
+library(tseries) # for adf.test() 
+library(FinTS) # for ArchTest()
+library(dplyr)
+library(vrtest) # for Auto.AR()
+library(vars)
+library(MTS)
+library(tsbox)
+#excess_death <- read.csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/excess-deaths/deaths.csv")
+url = "https://raw.githubusercontent.com/akarlinsky/world_mortality/main/world_mortality.csv"
+excess_death <- read_csv(url(url))
+us_death <- excess_death %>% 
+  filter(country_name=="United States")
+brazil_death <- excess_death %>% 
+  filter(country_name=="Brazil")
+russia_death <- excess_death %>% 
+  filter(country_name=="Russia")
+uk_death <- excess_death %>% 
+  filter(country_name=="United Kingdom")
+us_ts <- ts(us_death$deaths, frequency = 52,start = c(2015,2))
+uk_ts <- ts(uk_death$deaths, frequency = 52,start = c(2015,1))
+brazil_ts <- ts(brazil_death$deaths, frequency = 12,start = c(2015,1))
+russia_ts <- ts(russia_death$deaths, frequency = 12,start = c(2015,1))
+ts.plot(us_ts,ylab="Weekly Deaths from all causes in US")
+ts.plot(uk_ts, ylab="Weekly Deaths from all causes in UK")
+ts.plot(brazil_ts,ylab="Monthly Deaths from all causes in Brazil")
+ts.plot(russia_ts,ylab="Monthly Deaths from all causes in Russia")
+```
+
+```{r time series plots}
+par(mfrow=c(2,2))
+tsdisplay(us_ts)
+plot.ts(uk_ts, main="UK mortality time series")
+plot.ts(russia_ts, main="Russia mortality time series")
+plot.ts(brazil_ts, main="Brazil mortality time series")
+library(TSstudio)
+ts_plot(us_ts,
+        title = "US mortality time series",
+        Xtitle = "Year",
+        Ytitle = "Number of deaths from all causes")
+```
+
+```{r decomposition plots}
+plot(decompose(us_ts))
+plot(decompose(uk_ts))
+plot(decompose(brazil_ts))
+plot(decompose(russia_ts))
+```
+
+```{r us tsplots acf pacf}
+ggtsdisplay(window(us_ts,end=2020), main="US all deaths plots")
+```
+
+```{r uk tsplots acf pacf}
+ggtsdisplay(window(uk_ts,end=2020), main="UK all deaths plots")
+```
+
+```{r brazil tsplots acf pacf}
+ggtsdisplay(window(brazil_ts,end=2020), main="Brazil all deaths plots")
+```
+
+```{r russia tsplots acf pacf}
+ggtsdisplay(window(russia_ts,end=2020), main="Russia all deaths plots")
+```
+
+## US ts predicts
+### test for normality & Box.Cox transformation
+```{r test for normality}
+shapiro.test(us_ts) # p < .05 --> not normal
+par(mfrow=c(2,2))
+plot(us_ts)
+title("Time series of US deaths")
+abline(h=mean(us_ts),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(us_ts, main="Histogram of US deaths", breaks=20, freq=FALSE,col="grey")
+us_ts2 <- BoxCox(us_ts,BoxCox.lambda(us_ts))
+plot(us_ts2)
+title("BoxCox Transformed Time series of US deaths")
+abline(h=mean(us_ts2),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(us_ts2, main="Histogram of BoxCox US deaths", breaks=20, freq=FALSE,col="grey")
+```
+### test for stationarity
+```{r test for stationarity}
+adf.test(us_ts2) # P <.05 --> stationary
+par(mfrow=c(2,1))
+acf(us_ts2, main="ACF of US deaths",lag.max = 52*3) # slow tapering in ACF
+pacf(us_ts2, main="PACF of US deaths", lag.max = 52*3) # p=2, P=0
+plot(decompose(us_ts2))
+```
+### ARIMA(2,1,2)(0,1,2)[52]
+Since the ACF is slowly decreasing to 0, MA may not be a good model here, so I tried AR with p=2 first. Besides, looking at lags 52, 104, 152, there exist no significant correlations, suggesting we should only consider seasonality D=1 (but also need differencing d=1 because there's a trend in data). Therefore, I first tried a seasonal ARIMA model: ARIMA(2,0,0)(0,1,0)[52] which has an AIC of 3435.88. The auto.arima function suggested another SARIMA model of ARIMA(0,1,2)(0,1,0)[52] that has a slightly better AIC of 2563.57. Therefore, I decided to choose the later one.
+```{r select ARIMA or SARIMA}
+us_sub <- window(us_ts,end=c(2019,52)) # to estimate the expected deaths, we do not yet consider time periods after COVID-19
+(arima_us <- Arima(us_sub, 
+                   order = c(2,0,0),
+                   seasonal = list(order=c(0,1,0),
+                                   period=52))) #AIC=3435.88
+checkresiduals(arima_us)
+(sarima_us <- auto.arima(us_sub, trace = F,
+                          stepwise = T, #for faster stepwise selection
+                          seasonal = T)) # allows for seasonal models
+#SARIMA(2,0,2)(0,1,1)[52]: AIC 3412.94
+checkresiduals(sarima_us)
+```
+### check GARCH(0,1)
+```{r squared acf and ArchTest}
+# check if we need ARCH GARCH
+us_arimar <- sarima_us$residuals
+acf(us_arimar,lag.max = 50, main="ACF of ARIMA residuals")
+acf(us_arimar^2,lag.max = 50, main="ACF of sqaured ARIMA residuals")
+#ARCH effect
+arimaresArchTest_us <- ArchTest(us_arimar, lags=1, demean=TRUE)
+arimaresArchTest_us #>0.05 so there is an ARCH effect
+```
+
+```{r GARCH(0,1)}
+us.garch1 <- garch(us_arimar,c(0,1),trace=F)
+summary(us.garch1)
+```
+
+```{r check squared ACF of GARCH residuals}
+usgarch.res <- us.garch1$res[-1]
+acf(usgarch.res,main="ACF of GARCH residuals")
+acf(usgarch.res^2,main="ACF of squared GARCH residuals")
+```
+
+```{r plot volatility}
+us_vole <- ts(us_arimar^2)
+us_vole1 <- ts(us.garch1$fitted.values[-1,1]^2)
+plot(us_vole,main="Volatility of data")
+plot(us_vole1,main="Volatility of GARCH(0,1)")
+```
+### forecast
+```{r forecast for 2020}
+expected_us <- forecast(sarima_us,h=95)
+expected_us_ts <- expected_us$mean
+us_sub2 <- window(us_ts,start=c(2020,1))
+excess_us <- us_sub2 - expected_us_ts
+excess_us2 <- window(excess_us,end=c(2021,40))
+final_us_excess <- sum(excess_us2) #814665.1
+reported_us_deaths <- sum(window(us_sub2,end=c(2021,40))) #5962085
+expected_us_ts2<-sum(window(expected_us_ts,end=c(2021,40))) # 5147420
+final_p_us <- final_us_excess/expected_us_ts2 #0.1582667
+p_us <- (us_sub2 - expected_us_ts)/expected_us_ts
+autoplot(expected_us, main="US Expected Mortality: ARIMA(2,0,2)(0,1,1)[52]", xlab="Year",series="Expected Deaths",ylab="Number of Deaths")+autolayer(us_sub2, series = "Reported Deaths")+autolayer(expected_us$mean, series="Expected Deaths")+theme_minimal()
+```
+
+
+## UK ts predicts
+### test for normality & Box.Cox transformation
+```{r test for normality}
+shapiro.test(uk_ts) # p < .05 --> not normal
+par(mfrow=c(2,2))
+plot(uk_ts)
+title("Time series of UK deaths")
+abline(h=mean(uk_ts),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(uk_ts, main="Histogram of UK deaths", breaks=20, freq=FALSE,col="grey")
+uk_ts2 <- BoxCox(uk_ts,BoxCox.lambda(uk_ts))
+plot(uk_ts2)
+title("BoxCox Transformed Time series of UK deaths")
+abline(h=mean(uk_ts2),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(uk_ts2, main="Histogram of BoxCox UK deaths", breaks=20, freq=FALSE,col="grey")
+```
+### test for stationarity
+```{r test for stationarity}
+adf.test(uk_ts2) # P <.05 --> stationary
+par(mfrow=c(2,1))
+acf(uk_ts2, main="ACF of US deaths",lag.max = 52*4) # slow tapering in ACF Q=3?
+pacf(uk_ts2, main="PACF of US deaths", lag.max = 52*3) # p=2, P=2
+plot(decompose(uk_ts2))
+```
+### ARIMA(2,1,0)(2,1,0)[52]
+Since the ACF is slowly decreasing to 0, MA may not be a good model here, so I tried AR with p=2 first. Besides, looking at lags 52, 104, 152, there exist significant correlations at lag 52 and lag 104, suggesting we should consider seasonality D=1 and P=2 (but also need differencing d=1 because there's a trend in data). Therefore, I first tried a seasonal ARIMA model: ARIMA(2,1,0)(2,1,0)[52] which has a BEST AIC of 2557.44. The auto.arima function suggested another SARIMA model of ARIMA(2,0,1)(1,1,0)[52] that has a AIC of 2577.83. Therefore, I decided to choose the FIRST one.
+```{r select ARIMA or SARIMA}
+uk_sub <- window(uk_ts,end=c(2019,52)) # to estimate the expected deaths, we do not yet consider time periods after COVID-19
+(arima_uk <- Arima(uk_sub, 
+                   order = c(2,1,0),
+                   seasonal = list(order=c(2,1,0),
+                                   period=52))) #AIC=3363.1
+# ARIMA(2,1,0)(2,1,0)[52]: AIC 3363.1
+# ARIMA(2,1,0)(2,1,1)[52]: AIC 3364.94
+checkresiduals(arima_uk)
+(sarima_uk <- auto.arima(uk_sub, trace = F,
+                          stepwise = F, #for faster stepwise selection
+                          seasonal = T)) # allows for seasonal models
+#SARIMA(3,0,1)(1,1,1)[52]: AIC 3373.68
+checkresiduals(sarima_uk)
+```
+### check GARCH(0,1)
+```{r squared acf and ArchTest}
+# check if we need ARCH GARCH
+uk_arimar <- arima_uk$residuals
+acf(uk_arimar,lag.max = 50, main="ACF of ARIMA residuals")
+acf(uk_arimar^2,lag.max = 50, main="ACF of sqaured ARIMA residuals")
+#ARCH effect
+arimaresArchTest_uk <- ArchTest(uk_arimar, lags=1, demean=TRUE)
+arimaresArchTest_uk #<0.05 so there is an ARCH effect
+```
+
+```{r GARCH(0,1)}
+uk.garch1 <- garch(uk_arimar,c(0,1),trace=F)
+summary(uk.garch1) # Garch(0,1)
+```
+
+```{r check squared ACF of GARCH residuals}
+ukgarch.res <- uk.garch1$res[-1]
+acf(ukgarch.res,main="ACF of GARCH residuals")
+acf(ukgarch.res^2,main="ACF of squared GARCH residuals")
+```
+
+```{r plot volatility}
+uk_vole <- ts(uk_arimar^2)
+uk_vole1 <- ts(uk.garch1$fitted.values[-1,1]^2)
+plot(uk_vole,main="Volatility of data")
+plot(uk_vole1,main="Volatility of GARCH(0,1)")
+```
+### forecast
+```{r forecast for 2020}
+uk_sub2 <- window(uk_ts,start=c(2020,1))
+expected_uk <- forecast(arima_uk,h=98)
+expected_uk_ts <- expected_uk$mean
+excess_uk <- uk_sub2 - expected_uk_ts
+excess_uk2 <- window(excess_uk,end=c(2021,40))
+final_uk_excess <- sum(excess_uk2) #71062.04
+reported_uk_deaths <- sum(window(uk_sub2,end=c(2021,40))) #1188443
+expected_uk_ts2<-sum(window(expected_uk_ts,end=c(2021,40))) #1117381
+final_p_uk <- final_uk_excess/expected_uk_ts2 #0.06359697
+p_uk <- (uk_sub2 - expected_uk_ts)/expected_uk_ts
+mean(p_uk)
+autoplot(expected_uk, 
+         main="UK Expected Mortality: ARIMA(2,1,0)(2,1,0)[52]",
+         xlab="Year",series="Expected Deaths",ylab="Number of Deaths")+
+  autolayer(uk_sub2, series = "Reported Deaths")+
+  autolayer(expected_uk$mean, series="Expected Deaths")+
+  theme_minimal()
+```
+
+
+## Russia ts predicts
+### test for normality & Box.Cox transformation
+```{r test for normality}
+shapiro.test(russia_ts) # p < .05 --> not normal
+par(mfrow=c(2,2))
+plot(russia_ts)
+title("Time series of Russia deaths")
+abline(h=mean(russia_ts),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(russia_ts, main="Histogram of Russia deaths", breaks=20, freq=FALSE,col="grey")
+russia_ts2 <- BoxCox(russia_ts,BoxCox.lambda(russia_ts))
+plot(russia_ts2)
+title("BoxCox Transformed Time series of Russia deaths")
+abline(h=mean(russia_ts2),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(russia_ts2, main="Histogram of BoxCox Russia deaths", breaks=20, freq=FALSE,col="grey")
+```
+### test for stationarity
+```{r test for stationarity}
+adf.test(russia_ts2) # P = 0.7294 --> stationary
+par(mfrow=c(2,1))
+acf(russia_ts2, main="ACF of Russia deaths",lag.max = 12*3) # slow tapering but Q=1
+pacf(russia_ts2, main="PACF of Russia deaths", lag.max = 12*3) # p=1, P=0
+plot(decompose(russia_ts2))
+```
+### ARIMA(1,1,0)(0,1,1)[12]
+Since the ACF is slowly decreasing to 0, MA may not be a good model here, so I tried AR with p=1 first. Besides, looking at lags 12, 24, 36, there exist significant correlation at lag 12 only, suggesting we should only consider seasonality D=1 and Q=1(but also need differencing d=1 because there's a trend in data). Therefore, I first tried a seasonal ARIMA model: ARIMA(1,1,0)(0,1,1)[12] which has an AIC of 734.02. The auto.arima function suggested another SARIMA model of ARIMA(0,0,1)(1,1,0)[12] that has a slightly better AIC of 743.27. Therefore, I decided to choose the first one.
+```{r select ARIMA or SARIMA}
+russia_sub <- window(russia_ts,end=c(2019,12)) # to estimate the expected deaths, we do not yet consider time periods after COVID-19
+(arima_russia <- Arima(russia_sub, 
+                   order = c(1,1,0),
+                   seasonal = list(order=c(0,1,1),
+                                   period=12))) #AIC=945.89
+checkresiduals(arima_russia)
+(sarima_russia <- auto.arima(russia_sub, trace = F,
+                          stepwise = T, #for faster stepwise selection
+                          seasonal = T)) # allows for seasonal models
+#SARIMA(0,0,1)(1,1,0)[52]: AIC 955.08
+checkresiduals(sarima_russia)
+```
+### check GARCH --> NO ARCH effect
+```{r squared acf and ArchTest}
+# check if we need ARCH GARCH
+russia_arimar <- arima_russia$residuals
+acf(russia_arimar,lag.max = 50, main="ACF of ARIMA residuals")
+acf(russia_arimar^2,lag.max = 50, main="ACF of sqaured ARIMA residuals")
+#ARCH effect
+arimaresArchTest_russia <- ArchTest(russia_arimar, lags=1, demean=TRUE)
+arimaresArchTest_russia #=0.5645 so there is NOT an ARCH effect
+```
+### forecast
+```{r forecast for 2020}
+russia_sub2 <- window(russia_ts,start=c(2020,1))
+expected_russia <- forecast(arima_russia,h=22)
+expected_russia_ts <- expected_russia$mean
+excess_russia <- russia_sub2 - expected_russia_ts
+excess_russia2 <- window(excess_russia, end=c(2021,9))
+final_russia_excess <- sum(excess_russia2) #756038
+reported_russia_deaths <- sum(window(russia_sub2,end=c(2021,9))) #3864077
+expected_russia_ts2<-sum(window(expected_russia_ts,end=c(2021,9))) #3108039
+final_p_russia <- final_russia_excess/expected_russia_ts2 # 0.2432524
+p_russia <- (russia_sub2 - expected_russia_ts)/expected_russia_ts
+p_russa2 <- window(p_russia, end=c(2021,9))
+autoplot(expected_russia, 
+         main="Russia Expected Mortality: ARIMA(1,1,0)(0,1,1)[12]",
+         xlab="Year",series="Expected Deaths",ylab="Number of Deaths")+
+  autolayer(russia_sub2, series = "Reported Deaths")+
+  autolayer(expected_russia$mean, series="Expected Deaths")+
+  theme_minimal()
+```
+
+## Brazil ts predicts
+### test for normality & Box.Cox transformation
+```{r test for normality}
+shapiro.test(brazil_ts) # p < .05 --> not normal
+par(mfrow=c(2,2))
+plot(brazil_ts)
+title("Time series of Brazil deaths")
+abline(h=mean(brazil_ts),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(brazil_ts, main="Histogram of Brazil deaths", breaks=20, freq=FALSE,col="grey")
+brazil_ts2 <- BoxCox(brazil_ts,BoxCox.lambda(brazil_ts))
+plot(brazil_ts2)
+title("BoxCox Transformed Time series of Brazil deaths")
+abline(h=mean(brazil_ts2),col="blue",lty=3,lwd=3) #draw line at mean
+
+hist(brazil_ts2, main="Histogram of BoxCox Brazil deaths", breaks=20, freq=FALSE,col="grey")
+```
+### test for stationarity
+```{r test for stationarity}
+adf.test(brazil_ts2) # P <.05 --> stationary
+par(mfrow=c(2,1))
+acf(brazil_ts2, main="ACF of Brazil deaths",lag.max = 12*3) # slow tapering in ACF Q=1  q=?
+pacf(brazil_ts2, main="PACF of Brazil deaths", lag.max = 12*3) # p=0, P=0
+plot(decompose(brazil_ts2))
+```
+### ARIMA(0,1,2)(0,1,1)[12]
+Since the ACF is slowly decreasing to 0, MA may not be a good model here, so I tried AR with p=2 first. Besides, looking at lags 12, 24, 36, there exist significant correlation at lag 12, suggesting we should only consider seasonality D=1 and Q=1 (but also need differencing d=1 because there's a trend in data). Therefore, I first tried a seasonal ARIMA model: ARIMA(0,1,0)(0,1,1)[12] which has an AIC of 732.06. Then I added the AR term, ARIMA(1,1,0)(0,1,1)[12] --> AIC 734.02, and adding the MA term, ARIMA(0,1,2)(0,1,1)[12] --> AIC 720.6
+
+The auto.arima function suggested another SARIMA model of ARIMA(0,0,1)(1,1,0)[52] that has a AIC of 743.27. Therefore, I decided to choose the second one.
+```{r select ARIMA or SARIMA}
+brazil_sub <- window(brazil_ts,end=c(2019,12)) # to estimate the expected deaths, we do not yet consider time periods after COVID-19
+(arima_brazil <- Arima(brazil_sub, 
+                   order = c(0,1,2),
+                   seasonal = list(order=c(0,1,1),
+                                   period=12))) #AIC=884.11
+checkresiduals(arima_brazil)
+(sarima_brazil <- auto.arima(brazil_sub, trace = F,
+                          stepwise = T, #for faster stepwise selection
+                          seasonal = T)) # allows for seasonal models
+#SARIMA(1,0,0)(1,1,0)[12]: AIC 901.04
+checkresiduals(sarima_russia)
+```
+### check GARCH --> no ARCH effect
+```{r squared acf and ArchTest}
+# check if we need ARCH GARCH
+brazil_arimar <- arima_brazil$residuals
+acf(brazil_arimar,lag.max = 50, main="ACF of ARIMA residuals")
+acf(brazil_arimar^2,lag.max = 50, main="ACF of sqaured ARIMA residuals")
+#ARCH effect
+arimaresArchTest_brazil <- ArchTest(brazil_arimar, lags=1, demean=TRUE)
+arimaresArchTest_brazil #=0.5904 so there is NOT an ARCH effect
+```
+### forecast
+```{r forecast for 2020}
+brazil_sub2 <- window(brazil_ts,start=c(2020,1))
+expected_brazil <- forecast(arima_brazil,h=21)
+expected_brazil_ts <- expected_brazil$mean
+excess_brazil <- brazil_sub2 - expected_brazil_ts
+final_brazil_excess <- sum(excess_brazil) #657556.6
+expected_brazil_ts2 <- sum(expected_brazil_ts) # 2416724
+reported_brazil_deaths <- sum(brazil_sub2) # 3074280
+final_p_brazil <- final_brazil_excess / expected_brazil_ts2 #0.272086
+p_brazil <- (brazil_sub2 - expected_brazil_ts)/expected_brazil_ts
+autoplot(expected_brazil, 
+         main="Brazil Expected Mortality: ARIMA(0,1,2)(0,1,1)[12]",
+         xlab="Year",series="Expected Deaths",ylab="Number of Deaths")+
+  autolayer(brazil_sub2, series = "Reported Deaths")+
+  autolayer(expected_brazil$mean, series="Expected Deaths")+
+  theme_minimal()
+```
+
+```{r all four countries}
+autoplot(excess_us, main="Estimated Excess Deaths in 2020 and 2021",
+         xlab="Year",ylab="Number of Excess Deaths")+
+  autolayer(excess_uk,series="UK Excess Deaths")+
+  autolayer(excess_us,series="US Excess Deaths")+
+  autolayer(excess_brazil,series="Brazil Excess Deaths")+
+  autolayer(excess_russia,series="Russia Excess Deaths")+
+  theme_minimal()
+```
+
+```{r}
+autoplot(p_us, main="Estimated P-score of Excess Deaths in 2020 and 2021",
+         xlab="Year",ylab="P-score of Excess Deaths")+
+  autolayer(p_uk,series="UK P-score")+
+  autolayer(p_us,series="US P-score")+
+  autolayer(p_brazil,series="Brazil P-score")+
+  autolayer(p_russia,series="Russia P-score")+
+  theme_minimal()
+```
+
+
+## VAR model
+```{r combine all ts}
+library(zoo)
+uk_month <- ts(rollapply(uk_death$deaths,4,sum,by=4),start=c(2015,1),frequency = 12)
+us_month <- ts(rollapply(us_death$deaths,4,sum,by=4),start=c(2015,1),frequency = 12)
+all_ts <- cbind(us_month,uk_month,russia_ts,brazil_ts)
+all_ts <- na.remove(all_ts)
+plot.ts(all_ts)
+```
+
+```{r check stationarity for all ts}
+apply(all_ts, 2, adf.test) # only uk and brazil are stationary <.05
+df_all <- diffM(all_ts)
+apply(df_all, 2, adf.test) # now all <.05 -> stationary
+```
+
+```{r}
+VARselect(all_ts, type = "none")
+#AIC chose lag 10 for as the best lag to see the output for more details
+var_all <- vars::VAR(all_ts,p = 10, type = "none")
+summary(var_all)
+```
+
+```{r resial diagnostics}
+# Residual diagnostics
+serial.test(var_all) #there's a significant p-value
+```
+
+```{r causality of us}
+# Granger test for causality
+causality(var_all, cause = c("us_month")) 
+```
+
+```{r causality of uk}
+causality(var_all, cause = c("uk_month")) 
+```
+
+```{r causality of russia}
+causality(var_all, cause = c("russia_ts")) 
+```
+
+```{r causality of brazil}
+causality(var_all, cause = c("brazil_ts")) 
+```
+
+
+## Methods: 
+### data: 
++ filter by four countries: US, UK, Brazil, Russia.
++ Frequency: Weekly: 52 (US, UK), Monthly: 12 (Brazil, Russia)
++ # of observations in each subset by country and their start, end time of measurement.
++ include selection criteria for country and include time series plots for each country
++ for capstone: dummy variable for
+### Excess deaths: 
++ Use 2015-2019 historical data to train on models (naive method, ARIMA, regression, Neural nets?) and get the forecasted values for year 2020 (and maybe 2021).
++ Model selection criteria: AIC
++ Estimate Excess deaths: calculate excess deaths for each time period by taking the difference between expected deaths and reported deaths and summed them up across time to get the final estimate of excess deaths (e.g. c(2020,3) for monthly data).
+
++ equation for excess deaths estimates in 2020:
+\[\text{Estimated Excess Deaths}=\sum_{t\geq t_1}{\text{Actual deaths at time t in 2020}-\text{Predicted Deaths at time t}}\] 
+
++ equation for predicted/expected deaths in 2020:
+
+if ARIMA: \[D_{t,Y}= \alpha_1D_{t-1,Y} + \alpha_2D_{t-2,Y}+Z_t+\]
+
++ Cross country comparisons: P-score
+\[\text{P-score}=\frac{\text{Reported Deaths - Expected Deaths}}{\text{Expected Deaths}}\]
