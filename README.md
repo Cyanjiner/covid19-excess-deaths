@@ -5,4 +5,6 @@ The ARIMA (Autoregressive integrated moving average), GARCH (generalized autoreg
 
 The dataset used in this project comes from [the World Mortality Dataset](https://github.com/akarlinsky/world_mortality), which contains country-level data on deaths from all causes in 2015-2021 collected from various resources.
 
-Source code in this research can be found in [excess-deaths.Rmd](https://github.com/Cyanjiner/covid19-excess-deaths/blob/main/excess-deaths.Rmd).
+**Source code** in this research can be found in [excess-deaths.Rmd](https://github.com/Cyanjiner/covid19-excess-deaths/blob/main/excess-deaths.Rmd).
+
+**Presentation Slides:**[JZ-Excess-Deaths.pdf](https://github.com/Cyanjiner/covid19-excess-deaths/blob/main/JZ-Excess-Deaths.pdf)
